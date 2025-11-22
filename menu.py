@@ -221,7 +221,12 @@ def handle_ts_forecast(state: AppState) -> None:
     if col is None:
         return
 
-    series = state.df[col]
+    date_col = get_date_column(state.df)
+    if date_col is None:
+        print("Для обучения модели нужен столбец с датой (DatetimeIndex).")
+        return
+
+    series = state.df.set_index(date_col)[col].sort_index()
     series.name = col  # для красивого названия на графике
 
     try:

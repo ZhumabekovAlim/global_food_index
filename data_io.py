@@ -51,13 +51,35 @@ def save_settings(settings: Dict[str, Any]) -> None:
         print("Не удалось сохранить настройки:", e)
 
 
+def _read_and_clean_csv(path: str, skiprows: int = 0) -> pd.DataFrame:
+    """Вспомогательная функция: читает CSV и чистит названия колонок."""
+    df = pd.read_csv(path, skiprows=skiprows)
+
+    # удаляем полностью пустые колонки (в исходнике могут быть лишние запятые)
+    df = df.dropna(axis=1, how="all")
+
+    # нормализуем имена колонок, удаляем невидимые символы (например, BOM)
+    def _normalize_name(col: str) -> str:
+        return col.replace("\ufeff", "").strip().lower().replace(" ", "_")
+
+    df.columns = [_normalize_name(c) for c in df.columns]
+    return df
+
+
+def _select_date_column(df: pd.DataFrame) -> Optional[str]:
+    for candidate in ("date", "month", "time", "period"):
+        if candidate in df.columns:
+            return candidate
+    return None
+
+
 def load_fao_data(path: str = DEFAULT_DATA_PATH) -> Optional[pd.DataFrame]:
     """
     Загрузка CSV с индексами FAO.
     Делает:
     - проверку наличия файла;
-    - чтение CSV;
-    - нормализацию имён колонок (в нижний регистр, вместо пробелов — '_');
+    - чтение CSV (в т.ч. сценарий с несколькими строками заголовков FAO);
+    - нормализацию имён колонок;
     - попытку найти колонку с датой;
     - сортировку по времени;
     - выделение только числовых колонок + даты.
@@ -70,20 +92,23 @@ def load_fao_data(path: str = DEFAULT_DATA_PATH) -> Optional[pd.DataFrame]:
         return None
 
     try:
-        df = pd.read_csv(path)
+        df = _read_and_clean_csv(path)
     except Exception as e:
         print("Ошибка при чтении CSV:", e)
         return None
 
-    # нормализуем имена колонок
-    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+    date_col = _select_date_column(df)
 
-    # выбираем колонку с датой
-    date_col: Optional[str] = None
-    for candidate in ("date", "month", "time", "period"):
-        if candidate in df.columns:
-            date_col = candidate
-            break
+    # Если колонка даты не найдена, пробуем пропустить первые строки с метаданными FAO
+    if date_col is None:
+        try:
+            df_alt = _read_and_clean_csv(path, skiprows=2)
+            if _select_date_column(df_alt):
+                df = df_alt
+                date_col = _select_date_column(df_alt)
+        except Exception:
+            # fallback на первоначальный df
+            pass
 
     if date_col:
         df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
@@ -95,8 +120,12 @@ def load_fao_data(path: str = DEFAULT_DATA_PATH) -> Optional[pd.DataFrame]:
             "Графики и временные модели могут работать некорректно."
         )
 
+    # убираем технические колонки вида "Unnamed" из исходного CSV
+    df = df[[c for c in df.columns if not c.startswith("unnamed")]]
+
     # только числовые столбцы
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
 
     if date_col:
         cols = [date_col] + numeric_cols
