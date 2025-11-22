@@ -10,6 +10,7 @@ from analysis import (
     compute_correlation_matrix,
     compute_inflation,
     detect_high_correlations,
+    get_date_column,
     get_numeric_columns,
 )
 from data_io import save_dataframe_to_csv, save_settings, load_settings
