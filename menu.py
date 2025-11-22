@@ -14,10 +14,15 @@ from analysis import (
     get_numeric_columns,
 )
 from data_io import save_dataframe_to_csv, save_settings, load_settings
-from ml_models import TSLinearModelResult, train_and_evaluate_ts_linear_model
+from ml_models import (
+    TSLinearModelResult,
+    compare_forecast_baselines,
+    train_and_evaluate_ts_linear_model,
+)
 from visualization import (
     plot_correlation_heatmap,
     plot_forecast,
+    plot_forecast_multiple,
     plot_multiple_indices,
     plot_single_index,
 )
@@ -34,6 +39,7 @@ def print_main_menu() -> None:
     print("6 - Построить график нескольких индексов")
     print("7 - Сохранить последний результат в CSV")
     print("8 - ML: обучить простую модель прогноза и показать прогноз")
+    print("9 - ML: сравнить несколько простых моделей прогноза")
     print("0 - Выход")
 
 
@@ -263,6 +269,60 @@ def handle_ts_forecast(state: AppState) -> None:
     plot_forecast(series, forecast_df)
 
 
+def handle_baseline_comparison(state: AppState) -> None:
+    """Сравнение нескольких простых временных моделей для одного индекса."""
+
+    cols = get_numeric_columns(state.df)
+    col = choose_index_column(cols)
+    if col is None:
+        return
+
+    date_col = get_date_column(state.df)
+    if date_col is None:
+        print("Для обучения модели нужен столбец с датой (DatetimeIndex).")
+        return
+
+    series = state.df.set_index(date_col)[col].sort_index()
+    series.name = col
+
+    try:
+        results, forecast_df = compare_forecast_baselines(series)
+    except ValueError as e:
+        print("Не удалось сравнить модели:", e)
+        return
+    except Exception as e:
+        print("Во время обучения моделей произошла ошибка:")
+        print(e)
+        return
+
+    # сохраняем прогнозы как последний результат
+    state.last_result = forecast_df
+
+    print("\n=== Сравнение простых прогнозных моделей ===")
+    table_data = [
+        {
+            "Модель": r.model_name,
+            "MAE train": round(r.train_mae, 3),
+            "MAE test": round(r.test_mae, 3),
+            "MAPE train (%)": round(r.train_mape, 2),
+            "MAPE test (%)": round(r.test_mape, 2),
+            "Train size": r.train_size,
+            "Test size": r.test_size,
+        }
+        for r in results
+    ]
+
+    metrics_df = pd.DataFrame(table_data)
+    print(metrics_df.to_string(index=False))
+
+    print("\nПрогнозы на будущие месяцы:")
+    print(forecast_df.to_string())
+
+    plot_forecast_multiple(
+        series, forecast_df, title_suffix=f"для индекса {col} (бейзлайны)"
+    )
+
+
 def run_menu_loop(state: AppState) -> None:
     """Основной цикл меню."""
     actions: Dict[str, Callable[[AppState], None]] = {
@@ -274,6 +334,7 @@ def run_menu_loop(state: AppState) -> None:
         "6": handle_plot_multiple,
         "7": handle_save_last_result,
         "8": handle_ts_forecast,
+        "9": handle_baseline_comparison,
     }
 
     while True:
