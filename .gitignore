@@ -1,0 +1,22 @@
+# Виртуальное окружение
+venv/
+
+# PyCharm / IDE
+.idea/
+.vscode/
+
+# Python service files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Логи
+*.log
+
+# Результаты выполнения программы
+results/
+
+
+# data/fao_food_price_index.csv
+
