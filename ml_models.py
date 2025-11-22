@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -17,6 +17,22 @@ class TSLinearModelResult:
     coef_: np.ndarray         # веса при лагах
     intercept_: float         # свободный член
     n_lags: int               # количество лагов
+    train_mae: float
+    test_mae: float
+    train_mape: float
+    test_mape: float
+    train_size: int
+    test_size: int
+
+
+@dataclass
+class TSForecastModelResult:
+    """
+    Результат простой прогностической модели без обучения сложных весов.
+    Используется для сравнения бейзлайнов (наивный, скользящее среднее и т.д.).
+    """
+
+    model_name: str
     train_mae: float
     test_mae: float
     train_mape: float
@@ -90,6 +106,27 @@ def _mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 def _mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     denom = np.maximum(np.abs(y_true), 1e-8)
     return float(np.mean(np.abs((y_true - y_pred) / denom)) * 100.0)
+
+
+def _split_train_test(
+    y_true: np.ndarray, y_pred: np.ndarray, train_ratio: float
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Возвращает train/test части предсказаний и фактов по временной метке."""
+
+    n_samples = len(y_true)
+    split_idx = int(n_samples * train_ratio)
+
+    if split_idx <= 0:
+        split_idx = 1
+    elif split_idx >= n_samples:
+        split_idx = n_samples - 1
+
+    return (
+        y_true[:split_idx],
+        y_pred[:split_idx],
+        y_true[split_idx:],
+        y_pred[split_idx:],
+    )
 
 
 def train_and_evaluate_ts_linear_model(
@@ -192,3 +229,116 @@ def train_and_evaluate_ts_linear_model(
     )
 
     return result, test_df, forecast_df
+
+
+def compare_forecast_baselines(
+    series: pd.Series,
+    train_ratio: float = 0.8,
+    n_forecast_steps: int = 6,
+    ma_window: int = 3,
+    season_length: int = 12,
+    ses_alpha: float = 0.3,
+) -> Tuple[List[TSForecastModelResult], pd.DataFrame]:
+    """
+    Сравнение нескольких простых временных моделей:
+    - Наивный прогноз (копирование последнего значения);
+    - Скользящее среднее с окном ma_window;
+    - Сезонный наивный прогноз (значение год назад);
+    - Простое экспоненциальное сглаживание (SES).
+
+    Возвращает список результатов и DataFrame с прогнозами на n_forecast_steps.
+    """
+
+    if not isinstance(series.index, pd.DatetimeIndex):
+        raise ValueError("Ожидается DatetimeIndex для серии (нужен временной ряд).")
+
+    series_clean = series.dropna().astype(float)
+    values = series_clean.values
+    if len(values) < max(ma_window, season_length) + 5:
+        raise ValueError("Недостаточно данных для сравнения моделей.")
+
+    # индекс, с которого можем строить предсказания (чтобы хватило истории)
+    start_idx = max(1, ma_window, season_length)
+    y_true = values[start_idx:]
+
+    predictions: Dict[str, np.ndarray] = {}
+
+    # 1) Наивный прогноз: копируем предыдущее значение
+    naive_pred = values[start_idx - 1 : -1]
+    predictions["Наивный (last value)"] = naive_pred
+
+    # 2) Скользящее среднее
+    ma_preds: List[float] = []
+    for t in range(start_idx, len(values)):
+        ma_preds.append(float(np.mean(values[t - ma_window : t])))
+    predictions[f"Скользящее среднее {ma_window}м"] = np.array(ma_preds)
+
+    # 3) Сезонный наивный (берём значение год назад)
+    seasonal_preds: List[float] = []
+    for t in range(start_idx, len(values)):
+        seasonal_preds.append(float(values[t - season_length]))
+    predictions[f"Сезонный наивный L={season_length}"] = np.array(seasonal_preds)
+
+    # 4) Простое экспоненциальное сглаживание (SES)
+    ses_levels = [values[start_idx - 1]]
+    for t in range(start_idx, len(values)):
+        level = ses_alpha * values[t - 1] + (1 - ses_alpha) * ses_levels[-1]
+        ses_levels.append(level)
+    ses_pred = np.array(ses_levels[1:])  # пропускаем уровень, соответствующий старту
+    predictions[f"SES α={ses_alpha}"] = ses_pred
+
+    results: List[TSForecastModelResult] = []
+
+    for model_name, y_pred in predictions.items():
+        y_train, y_pred_train, y_test, y_pred_test = _split_train_test(
+            y_true, y_pred, train_ratio
+        )
+
+        result = TSForecastModelResult(
+            model_name=model_name,
+            train_mae=_mae(y_train, y_pred_train),
+            test_mae=_mae(y_test, y_pred_test),
+            train_mape=_mape(y_train, y_pred_train),
+            test_mape=_mape(y_test, y_pred_test),
+            train_size=len(y_train),
+            test_size=len(y_test),
+        )
+        results.append(result)
+
+    # --- Прогноз на будущее для каждой модели ---
+    last_values = values.tolist()
+    forecasts: Dict[str, List[float]] = {name: [] for name in predictions}
+
+    for step in range(n_forecast_steps):
+        # Наивный
+        forecasts["Наивный (last value)"].append(float(last_values[-1]))
+
+        # Скользящее среднее
+        forecasts[f"Скользящее среднее {ma_window}м"].append(
+            float(np.mean(last_values[-ma_window:]))
+        )
+
+        # Сезонный наивный
+        if len(last_values) >= season_length:
+            forecasts[f"Сезонный наивный L={season_length}"].append(
+                float(last_values[-season_length])
+            )
+        else:
+            forecasts[f"Сезонный наивный L={season_length}"].append(float(last_values[-1]))
+
+        # SES: используем последний уровень как прогноз
+        last_level = ses_alpha * last_values[-1] + (1 - ses_alpha) * ses_levels[-1]
+        ses_levels.append(last_level)
+        forecasts[f"SES α={ses_alpha}"].append(float(last_level))
+
+        # добавляем одно из прогнозных значений в историю, чтобы последующие шаги
+        # зависели от предыдущего прогноза (выбираем наивный как нейтральный вариант)
+        last_values.append(forecasts["Наивный (last value)"][-1])
+
+    future_dates = [
+        series_clean.index[-1] + DateOffset(months=i + 1)
+        for i in range(n_forecast_steps)
+    ]
+
+    forecast_df = pd.DataFrame(forecasts, index=pd.DatetimeIndex(future_dates))
+    return results, forecast_df

@@ -112,3 +112,48 @@ def plot_forecast(series: pd.Series, forecast_df: pd.DataFrame) -> None:
     )
 
     fig.show()
+
+
+def plot_forecast_multiple(
+    series: pd.Series, forecast_df: pd.DataFrame, title_suffix: str = ""
+) -> None:
+    """
+    График для сравнения нескольких прогнозных моделей.
+
+    forecast_df должен содержать несколько колонок с одинаковым DatetimeIndex.
+    """
+
+    if not isinstance(series.index, pd.DatetimeIndex):
+        print("Нельзя построить график прогноза: серия не имеет DatetimeIndex.")
+        return
+
+    series_clean = series.dropna()
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=series_clean.index,
+            y=series_clean.values,
+            mode="lines",
+            name="Фактические значения",
+        )
+    )
+
+    for col in forecast_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=forecast_df.index,
+                y=forecast_df[col].values,
+                mode="lines+markers",
+                name=f"Прогноз: {col}",
+            )
+        )
+
+    fig.update_layout(
+        title=f"История и прогнозы{(' ' + title_suffix) if title_suffix else ''}",
+        xaxis_title="Дата",
+        yaxis_title="Значение индекса",
+    )
+
+    fig.show()
